@@ -1,0 +1,588 @@
+/**
+ * SSP - Pharmacy Delivery (V4) — rebuilt from scratch
+ *
+ * Features:
+ * - Light green & white theme (Tailwind)
+ * - Multiple stores & products
+ * - Global search (stores + medicines)
+ * - Separate views: Shop, Cart, Order History
+ * - Functional cart (add, inc/dec, remove, clear)
+ * - Payment methods (Card, Pix, Cash)
+ * - Finalize order -> detailed summary modal
+ * - localStorage persistence for cart & orders
+ *
+ * Usage:
+ * 1) Ensure Tailwind is configured.
+ * 2) Install icons: `npm i lucide-react`.
+ * 3) Save as `SSPAppV4.jsx` and render <SSPAppV4 /> in your app.
+ */
+
+import React, { useEffect, useMemo, useState } from 'react';
+import {
+  ShoppingCart,
+  Search as IconSearch,
+  Plus,
+  Minus,
+  CreditCard,
+  Zap,
+  DollarSign,
+  ArrowLeft,
+  History,
+} from 'lucide-react';
+
+// ----------------- Sample Data -----------------
+const STORES = [
+  {
+    id: 'farmacia-central',
+    name: 'Farmácia Central',
+    rating: 4.8,
+    eta: '20-30 min',
+    products: [
+      { id: 'fc-p1', name: 'Dipirona 500mg (20 comp.)', price: 9.9, category: 'Analgésico' },
+      { id: 'fc-p2', name: 'Paracetamol 500mg (20 comp.)', price: 7.5, category: 'Analgésico' },
+      { id: 'fc-p3', name: 'Soro Fisiológico 0.9% 500ml', price: 6.0, category: 'Soluções' },
+    ],
+  },
+  {
+    id: 'drogaria-nova',
+    name: 'Drogaria Nova Saúde',
+    rating: 4.6,
+    eta: '15-25 min',
+    products: [
+      { id: 'dn-p1', name: 'Amoxicilina 500mg (12 cps)', price: 24.5, category: 'Antibiótico' },
+      { id: 'dn-p2', name: 'Ibuprofeno 400mg (20 comp.)', price: 12.0, category: 'Anti-inflamatório' },
+      { id: 'dn-p3', name: 'Band-aid (caixa 20)', price: 4.5, category: 'Curativos' },
+    ],
+  },
+  {
+    id: 'planeta-remedio',
+    name: 'Planeta Remédio',
+    rating: 4.3,
+    eta: '30-40 min',
+    products: [
+      { id: 'pr-p1', name: 'Vitamina C 1000mg (30 caps)', price: 29.9, category: 'Suplemento' },
+      { id: 'pr-p2', name: 'Xarope Tosse (120ml)', price: 18.0, category: 'Respiratório' },
+      { id: 'pr-p3', name: 'Ácido Bórico 10g', price: 5.75, category: 'Dermocosmético' },
+    ],
+  },
+];
+
+// ----------------- Helpers -----------------
+const formatCurrency = (v) => `R$ ${v.toFixed(2).replace('.', ',')}`;
+const CART_KEY = 'ssp_v4_cart';
+const ORDERS_KEY = 'ssp_v4_orders';
+
+export default function SSPAppV4() {
+  const [view, setView] = useState('shop'); // 'shop' | 'cart' | 'history'
+  const [stores] = useState(STORES);
+  const [query, setQuery] = useState('');
+  const [selectedStoreId, setSelectedStoreId] = useState(null);
+
+  const [cart, setCart] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(CART_KEY) || '[]'); } catch { return []; }
+  });
+
+  const [paymentMethod, setPaymentMethod] = useState('card');
+  const [customerName, setCustomerName] = useState('');
+  const [address, setAddress] = useState('');
+
+  const [orderSuccess, setOrderSuccess] = useState(null); // order object
+
+  useEffect(() => {
+    try { localStorage.setItem(CART_KEY, JSON.stringify(cart)); } catch {}
+  }, [cart]);
+
+  const { filteredStores, productMatches } = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return { filteredStores: stores, productMatches: [] };
+
+    const filteredStores = stores.filter((s) => s.name.toLowerCase().includes(q));
+    const productMatches = [];
+    stores.forEach((s) => s.products.forEach((p) => {
+      if (p.name.toLowerCase().includes(q)) productMatches.push({ store: s, product: p });
+    }));
+
+    return { filteredStores, productMatches };
+  }, [query, stores]);
+
+  // ------------- Cart ops -------------
+  const cartCount = cart.reduce((acc, it) => acc + it.qty, 0);
+  const subtotal = cart.reduce((acc, it) => acc + it.product.price * it.qty, 0);
+  const deliveryFee = cart.length ? 5 : 0;
+  const tax = subtotal * 0.05;
+  const total = subtotal + deliveryFee + tax;
+
+  function addToCart(product, store, openCart = false) {
+    setCart((prev) => {
+      const key = `${store.id}__${product.id}`;
+      const found = prev.find((i) => i.key === key);
+      if (found) return prev.map((i) => (i.key === key ? { ...i, qty: i.qty + 1 } : i));
+      return [...prev, { key, product: { ...product }, storeId: store.id, storeName: store.name, qty: 1 }];
+    });
+    if (openCart) setView('cart');
+  }
+
+  function updateQty(key, delta) {
+    setCart((prev) => prev
+      .map((i) => (i.key === key ? { ...i, qty: Math.max(1, i.qty + delta) } : i))
+      .filter((i) => i.qty > 0));
+  }
+
+  function removeFromCart(key) { setCart((prev) => prev.filter((i) => i.key !== key)); }
+  function clearCart() { setCart([]); }
+
+  function placeOrder() {
+    if (!customerName.trim() || !address.trim()) {
+      alert('Preencha nome e endereço para prosseguir.');
+      return;
+    }
+
+    const itemsCopy = cart.map((it) => ({
+      key: it.key,
+      product: { ...it.product },
+      storeId: it.storeId,
+      storeName: it.storeName,
+      qty: it.qty,
+    }));
+
+    const order = {
+      id: `SSP-${Date.now()}`,
+      customerName,
+      address,
+      items: itemsCopy,
+      subtotal,
+      deliveryFee,
+      tax,
+      total,
+      paymentMethod,
+      createdAt: new Date().toISOString(),
+    };
+
+    try {
+      const all = JSON.parse(localStorage.getItem(ORDERS_KEY) || '[]');
+      all.unshift(order);
+      localStorage.setItem(ORDERS_KEY, JSON.stringify(all));
+    } catch {}
+
+    setOrderSuccess(order);
+    clearCart();
+    setView('shop');
+  }
+
+  return (
+    <div className="min-h-screen bg-white text-gray-800">
+      {/* Header */}
+      <header className="bg-green-50 border-b border-green-100">
+        <div className="max-w-6xl mx-auto px-4 py-4 flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <div className="w-12 h-12 rounded-2xl bg-white flex items-center justify-center shadow-sm">
+              <span className="text-green-600 font-bold">SSP</span>
+            </div>
+            <div>
+              <h1 className="text-lg font-semibold text-green-700">SSP — Farmácia Delivery</h1>
+              <p className="text-sm text-green-600">Medicamentos e itens de saúde com entrega rápida</p>
+            </div>
+          </div>
+
+          <div className="flex-1 max-w-2xl">
+            <div className="relative">
+              <input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Pesquisar lojas ou medicamentos..."
+                className="w-full pl-10 pr-4 py-2 rounded-lg border border-green-100 bg-white focus:outline-none focus:ring-2 focus:ring-green-200"
+              />
+              <div className="absolute left-3 top-2.5 text-green-400">
+                <IconSearch className="w-5 h-5" />
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button onClick={() => setView('shop')} className={`px-3 py-2 rounded-lg ${view === 'shop' ? 'bg-white text-green-700 border border-green-100' : 'text-green-600'}`}>Loja</button>
+            <button onClick={() => setView('history')} className={`px-3 py-2 rounded-lg inline-flex items-center gap-2 ${view === 'history' ? 'bg-white text-green-700 border border-green-100' : 'text-green-600'}`}>
+              <History className="w-4 h-4"/> Pedidos
+            </button>
+            <button
+              onClick={() => setView('cart')}
+              className={`relative inline-flex items-center gap-2 px-3 py-2 rounded-lg ${view === 'cart' ? 'bg-green-600 text-white' : 'bg-white text-green-700 border border-green-100'}`}
+            >
+              <ShoppingCart className="w-5 h-5" />
+              <span className="text-sm font-medium">Carrinho</span>
+              {cartCount > 0 && (
+                <span className="absolute -top-2 -right-2 bg-white text-green-700 rounded-full w-6 h-6 flex items-center justify-center text-xs font-bold border border-green-100">{cartCount}</span>
+              )}
+            </button>
+          </div>
+        </div>
+      </header>
+
+      {/* Main Views */}
+      {view === 'shop' && (
+        <ShopView
+          stores={stores}
+          query={query}
+          filteredStores={filteredStores}
+          productMatches={productMatches}
+          selectedStoreId={selectedStoreId}
+          setSelectedStoreId={setSelectedStoreId}
+          addToCart={addToCart}
+          goToCart={() => setView('cart')}
+          cartCount={cartCount}
+        />
+      )}
+
+      {view === 'cart' && (
+        <CartView
+          cart={cart}
+          updateQty={updateQty}
+          removeFromCart={removeFromCart}
+          subtotal={subtotal}
+          deliveryFee={deliveryFee}
+          tax={tax}
+          total={total}
+          paymentMethod={paymentMethod}
+          setPaymentMethod={setPaymentMethod}
+          customerName={customerName}
+          setCustomerName={setCustomerName}
+          address={address}
+          setAddress={setAddress}
+          placeOrder={placeOrder}
+          clearCart={clearCart}
+          goBack={() => setView('shop')}
+        />
+      )}
+
+      {view === 'history' && <HistoryView goBack={() => setView('shop')} />}
+
+      {/* Order success modal */}
+      {orderSuccess && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center">
+          <div className="absolute inset-0 bg-black/30" onClick={() => setOrderSuccess(null)} />
+          <div className="bg-white p-6 rounded-2xl shadow max-w-lg z-50">
+            <h3 className="text-lg font-semibold text-green-700">Resumo do pedido</h3>
+            <p className="mt-2 text-sm text-gray-700">Pedido <span className="font-mono">{orderSuccess.id}</span> criado em {new Date(orderSuccess.createdAt).toLocaleString()}.</p>
+
+            <div className="mt-4 space-y-2 text-sm text-gray-700">
+              {orderSuccess.items.map((it) => (
+                <div key={it.key} className="flex justify-between">
+                  <div className="truncate">{it.product.name} <span className="text-xs text-gray-500">×{it.qty}</span></div>
+                  <div className="font-medium">{formatCurrency(it.product.price * it.qty)}</div>
+                </div>
+              ))}
+
+              <div className="pt-2 border-t mt-2">
+                <Row label="Subtotal" value={formatCurrency(orderSuccess.subtotal)} />
+                <Row label="Entrega" value={formatCurrency(orderSuccess.deliveryFee)} />
+                <Row label="Taxa" value={formatCurrency(orderSuccess.tax)} />
+                <Row label="Total" value={formatCurrency(orderSuccess.total)} bold />
+              </div>
+
+              <div className="mt-3 text-sm">
+                <div><strong>Entrega para:</strong> {orderSuccess.customerName}</div>
+                <div className="text-gray-600">{orderSuccess.address}</div>
+                <div className="mt-1"><strong>Pagamento:</strong> {orderSuccess.paymentMethod}</div>
+              </div>
+            </div>
+
+            <div className="mt-4 flex gap-2 justify-end">
+              <button onClick={() => setOrderSuccess(null)} className="px-4 py-2 rounded bg-green-600 text-white">Fechar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <footer className="mt-8 py-6 text-center text-sm text-gray-600">SSP © {new Date().getFullYear()} — Demo</footer>
+    </div>
+  );
+}
+
+// ----------------- Views -----------------
+function ShopView({ stores, query, filteredStores, productMatches, selectedStoreId, setSelectedStoreId, addToCart, goToCart, cartCount }) {
+  return (
+    <main className="max-w-6xl mx-auto p-4 grid grid-cols-1 md:grid-cols-3 gap-6">
+      <section className="md:col-span-2">
+        {query ? (
+          <div className="mb-4">
+            <h2 className="text-sm text-gray-600 mb-2">Resultados da busca</h2>
+
+            {productMatches.length > 0 && (
+              <div className="space-y-3">
+                {productMatches.map((pm) => (
+                  <div key={`${pm.store.id}_${pm.product.id}`} className="p-3 bg-green-50 rounded-lg border border-green-100 flex items-center justify-between">
+                    <div>
+                      <div className="font-semibold">{pm.product.name}</div>
+                      <div className="text-xs text-green-700">{pm.store.name} • {pm.store.eta}</div>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <div className="font-medium">{formatCurrency(pm.product.price)}</div>
+                      <button onClick={() => addToCart(pm.product, pm.store)} className="h-10 px-3 rounded bg-green-600 text-white text-sm">Adicionar</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {filteredStores.length > 0 && (
+              <div className="mt-4">
+                <h3 className="text-sm font-semibold text-gray-700 mb-2">Lojas correspondentes</h3>
+                <div className="grid grid-cols-1 gap-3">
+                  {filteredStores.map((s) => (
+                    <StoreCard key={s.id} store={s} onSelect={() => setSelectedStoreId(s.id)} onAdd={addToCart} />
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {productMatches.length === 0 && filteredStores.length === 0 && <div>Nenhum resultado encontrado.</div>}
+          </div>
+        ) : (
+          <div>
+            <h2 className="text-xl font-semibold mb-2 text-green-700">Lojas em destaque</h2>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {stores.map((s) => (
+                <StoreCard key={s.id} store={s} onSelect={() => setSelectedStoreId(s.id)} onAdd={addToCart} />
+              ))}
+            </div>
+          </div>
+        )}
+
+        {selectedStoreId && (
+          <div className="mt-6">
+            <button onClick={() => setSelectedStoreId(null)} className="text-sm text-green-600 mb-3">← Voltar às lojas</button>
+            <div>
+              {stores.filter((s) => s.id === selectedStoreId).map((s) => (
+                <div key={s.id} className="p-4 border rounded-lg bg-white">
+                  <div className="flex items-center justify-between mb-3">
+                    <div>
+                      <h3 className="text-lg font-semibold text-green-700">{s.name}</h3>
+                      <div className="text-sm text-gray-600">Avaliação: {s.rating} • {s.eta}</div>
+                    </div>
+                    <div className="text-sm text-green-600">Farmácia</div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    {s.products.map((p) => (
+                      <ProductCard key={p.id} product={p} store={s} onAdd={addToCart} />
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </section>
+
+      <aside className="sticky top-6">
+        <div className="p-4 bg-green-50 border border-green-100 rounded-lg">
+          <h3 className="text-lg font-semibold text-green-700">Resumo do pedido</h3>
+          <div className="mt-3 text-sm text-gray-700">
+            <div>Itens: {cartCount}</div>
+            <div className="mt-2 font-semibold">Abra o Carrinho para ver detalhes</div>
+          </div>
+
+          <div className="mt-4">
+            <button onClick={goToCart} className="mt-2 w-full py-2 rounded bg-green-600 text-white flex items-center justify-center gap-2">
+              <ShoppingCart className="w-5 h-5"/> Ir para Carrinho
+            </button>
+          </div>
+        </div>
+
+        <div className="mt-4 p-4 text-sm border rounded bg-white">
+          <div className="font-semibold text-green-700">Ajuda rápida</div>
+          <ul className="mt-2 list-disc list-inside text-gray-700">
+            <li>Pesquise por nome do remédio ou pela farmácia.</li>
+            <li>Adicione produtos ao carrinho e escolha forma de pagamento.</li>
+            <li>Pedidos são simulados localmente (demo).</li>
+          </ul>
+        </div>
+      </aside>
+    </main>
+  );
+}
+
+function CartView({ cart, updateQty, removeFromCart, subtotal, deliveryFee, tax, total, paymentMethod, setPaymentMethod, customerName, setCustomerName, address, setAddress, placeOrder, clearCart, goBack }) {
+  return (
+    <main className="max-w-4xl mx-auto p-6">
+      <div className="flex items-center gap-4 mb-4">
+        <button onClick={goBack} className="px-2 py-2 rounded bg-white border"><ArrowLeft className="w-4 h-4"/></button>
+        <h2 className="text-2xl font-semibold text-green-700">Seu Carrinho</h2>
+      </div>
+
+      {cart.length === 0 ? (
+        <div className="p-8 border rounded-lg text-center text-gray-600">Seu carrinho está vazio. Volte para a Loja e adicione produtos.</div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          <div className="md:col-span-2 space-y-3">
+            {cart.map((item) => (
+              <CartItem key={item.key} item={item} updateQty={updateQty} removeFromCart={removeFromCart} />
+            ))}
+
+            <div className="p-3 border rounded-lg">
+              <Row label="Subtotal" value={formatCurrency(subtotal)} />
+              <Row label="Entrega" value={formatCurrency(deliveryFee)} />
+              <Row label="Taxa" value={formatCurrency(tax)} />
+              <Row label="Total" value={formatCurrency(total)} bold />
+            </div>
+
+            <div className="flex gap-2">
+              <button onClick={clearCart} className="py-2 px-3 rounded border">Limpar Carrinho</button>
+            </div>
+          </div>
+
+          <aside className="p-4 border rounded-lg">
+            <h3 className="font-semibold text-green-700">Pagamento</h3>
+            <div className="mt-3 space-y-2">
+              <label className="flex items-center gap-2">
+                <input type="radio" name="pay" checked={paymentMethod === 'card'} onChange={() => setPaymentMethod('card')} />
+                <div className="flex items-center gap-2"><CreditCard className="w-4 h-4"/> Cartão</div>
+              </label>
+              <label className="flex items-center gap-2">
+                <input type="radio" name="pay" checked={paymentMethod === 'pix'} onChange={() => setPaymentMethod('pix')} />
+                <div className="flex items-center gap-2"><Zap className="w-4 h-4"/> Pix</div>
+              </label>
+              <label className="flex items-center gap-2">
+                <input type="radio" name="pay" checked={paymentMethod === 'cash'} onChange={() => setPaymentMethod('cash')} />
+                <div className="flex items-center gap-2"><DollarSign className="w-4 h-4"/> Dinheiro</div>
+              </label>
+            </div>
+
+            <div className="mt-4 space-y-2">
+              <input value={customerName} onChange={(e) => setCustomerName(e.target.value)} placeholder="Nome para entrega" className="w-full p-2 rounded border border-green-100" />
+              <input value={address} onChange={(e) => setAddress(e.target.value)} placeholder="Endereço completo" className="w-full p-2 rounded border border-green-100" />
+            </div>
+
+            <button onClick={placeOrder} className="mt-4 w-full py-2 rounded bg-green-600 text-white">Finalizar pedido</button>
+          </aside>
+        </div>
+      )}
+    </main>
+  );
+}
+
+function HistoryView({ goBack }) {
+  const [orders, setOrders] = useState([]);
+  useEffect(() => {
+    try { setOrders(JSON.parse(localStorage.getItem(ORDERS_KEY) || '[]')); } catch { setOrders([]); }
+  }, []);
+
+  return (
+    <main className="max-w-4xl mx-auto p-6">
+      <div className="flex items-center gap-4 mb-4">
+        <button onClick={goBack} className="px-2 py-2 rounded bg-white border"><ArrowLeft className="w-4 h-4"/></button>
+        <h2 className="text-2xl font-semibold text-green-700">Seus Pedidos</h2>
+      </div>
+
+      {orders.length === 0 ? (
+        <div className="p-8 border rounded-lg text-center text-gray-600">Nenhum pedido ainda.</div>
+      ) : (
+        <div className="space-y-4">
+          {orders.map((o) => (
+            <div key={o.id} className="p-4 border rounded-lg bg-white">
+              <div className="flex items-center justify-between">
+                <div className="font-semibold text-green-700">{o.id}</div>
+                <div className="text-sm text-gray-600">{new Date(o.createdAt).toLocaleString()}</div>
+              </div>
+              <div className="mt-2 text-sm text-gray-700">
+                <div className="mb-1"><strong>Cliente:</strong> {o.customerName}</div>
+                <div className="mb-1"><strong>Endereço:</strong> {o.address}</div>
+                <div className="mb-1"><strong>Pagamento:</strong> {o.paymentMethod}</div>
+                <div className="mb-2"><strong>Itens:</strong></div>
+                <div className="space-y-1">
+                  {o.items.map((it) => (
+                    <div key={it.key} className="flex justify-between">
+                      <div className="truncate">{it.product.name} ×{it.qty}</div>
+                      <div>{formatCurrency(it.product.price * it.qty)}</div>
+                    </div>
+                  ))}
+                </div>
+                <div className="mt-2 pt-2 border-t">
+                  <Row label="Subtotal" value={formatCurrency(o.subtotal)} />
+                  <Row label="Entrega" value={formatCurrency(o.deliveryFee)} />
+                  <Row label="Taxa" value={formatCurrency(o.tax)} />
+                  <Row label="Total" value={formatCurrency(o.total)} bold />
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </main>
+  );
+}
+
+// ----------------- Small UI -----------------
+function StoreCard({ store, onSelect, onAdd }) {
+  return (
+    <div className="p-4 bg-white rounded-lg border hover:shadow-sm">
+      <div className="flex items-start justify-between">
+        <div>
+          <h4 className="font-semibold text-green-700">{store.name}</h4>
+          <div className="text-xs text-gray-600">{store.rating} ★ • {store.eta}</div>
+        </div>
+        <button onClick={onSelect} className="text-sm text-green-600">Ver</button>
+      </div>
+
+      <div className="mt-3 grid grid-cols-1 gap-2">
+        {store.products.slice(0, 3).map((p) => (
+          <div key={p.id} className="flex items-center justify-between text-sm gap-3">
+            <div className="min-w-0">
+              <div className="font-medium truncate">{p.name}</div>
+              <div className="text-xs text-gray-500">{p.category}</div>
+            </div>
+            <div className="flex items-center gap-2 flex-shrink-0">
+              <div className="text-sm font-medium w-24 text-right">{formatCurrency(p.price)}</div>
+              <button onClick={() => onAdd(p, store, false)} className="h-8 px-3 rounded bg-green-600 text-white text-xs flex items-center justify-center whitespace-nowrap flex-shrink-0">+</button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ProductCard({ product, store, onAdd }) {
+  return (
+    <div className="p-3 border rounded-lg flex flex-col justify-between">
+      <div>
+        <div className="font-semibold text-sm truncate">{product.name}</div>
+        <div className="text-xs text-gray-600 mt-1">{product.category}</div>
+      </div>
+
+      <div className="mt-3 flex items-center justify-between">
+        <div className="font-medium w-24 text-right">{formatCurrency(product.price)}</div>
+        <div className="flex items-center gap-2">
+          <button onClick={() => onAdd(product, store, false)} className="h-8 px-3 rounded bg-green-600 text-white flex items-center justify-center whitespace-nowrap flex-shrink-0">Adicionar</button>
+          <button onClick={() => onAdd(product, store, true)} className="h-8 px-3 rounded border text-sm flex items-center justify-center whitespace-nowrap flex-shrink-0">+ e ver carrinho</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CartItem({ item, updateQty, removeFromCart }) {
+  return (
+    <div className="p-3 border rounded-lg flex items-center justify-between">
+      <div>
+        <div className="font-medium">{item.product.name}</div>
+        <div className="text-sm text-gray-600">{item.storeName}</div>
+        <div className="text-sm text-green-700">{formatCurrency(item.product.price)}</div>
+      </div>
+      <div className="flex items-center gap-2">
+        <button onClick={() => updateQty(item.key, -1)} className="p-1 rounded border"><Minus className="w-4 h-4"/></button>
+        <div className="px-3">{item.qty}</div>
+        <button onClick={() => updateQty(item.key, 1)} className="p-1 rounded border"><Plus className="w-4 h-4"/></button>
+        <button onClick={() => removeFromCart(item.key)} className="ml-3 text-sm text-red-600">Remover</button>
+      </div>
+    </div>
+  );
+}
+
+function Row({ label, value, bold }) {
+  return (
+    <div className={`flex items-center justify-between ${bold ? 'font-semibold' : 'text-sm text-gray-700'}`}>
+      <div>{label}</div>
+      <div>{value}</div>
+    </div>
+  );
+}
